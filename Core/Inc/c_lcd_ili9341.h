@@ -1,8 +1,9 @@
 /**
  * @file    c_lcd_ili9341.h
- * @brief   ILI9341 LCD 드라이버 공개 API (SPI + DMA)
+ * @brief   ILI9341 LCD 드라이버 공개 API (SPI + DMA, Queue 아키텍처)
  * @details 2.4" 240×320 TFT LCD, Landscape 320×240, RGB565.
- *          SPI2 + DMA1_Stream4, FreeRTOS 바이너리 세마포어 동기화.
+ *          전용 Display 태스크 + Message Queue로 멀티태스크 안전성 보장.
+ *          헤더 매크로로 SPI 인스턴스, GPIO 핀, 큐/태스크 설정 가능.
  */
 #ifndef C_LCD_ILI9341_H
 #define C_LCD_ILI9341_H
@@ -11,9 +12,68 @@
 #include "c_font.h"
 #include <stdint.h>
 
+/* ── 하드웨어 설정 ─────────────────────────────────────────────────────── */
+
+/**
+ * @brief  SPI 핸들 인스턴스 이름 (CubeMX 생성 변수명)
+ * @note   예: hspi2 (F446RE), hspi1 (H7) 등
+ */
+#ifndef LCD_SPI_INSTANCE
+#define LCD_SPI_INSTANCE        hspi2
+#endif
+
+/** @brief DC (Data/Command) 핀 포트 */
+#ifndef LCD_PIN_DC_PORT
+#define LCD_PIN_DC_PORT         LCD_DC_GPIO_Port
+#endif
+/** @brief DC 핀 번호 */
+#ifndef LCD_PIN_DC_PIN
+#define LCD_PIN_DC_PIN          LCD_DC_Pin
+#endif
+
+/** @brief RST (Reset) 핀 포트 */
+#ifndef LCD_PIN_RST_PORT
+#define LCD_PIN_RST_PORT        LCD_RST_GPIO_Port
+#endif
+/** @brief RST 핀 번호 */
+#ifndef LCD_PIN_RST_PIN
+#define LCD_PIN_RST_PIN         LCD_RST_Pin
+#endif
+
+/** @brief LED (Backlight) 핀 포트 */
+#ifndef LCD_PIN_LED_PORT
+#define LCD_PIN_LED_PORT        LCD_LED_GPIO_Port
+#endif
+/** @brief LED 핀 번호 */
+#ifndef LCD_PIN_LED_PIN
+#define LCD_PIN_LED_PIN         LCD_LED_Pin
+#endif
+
 /* ── 화면 크기 (Landscape) ─────────────────────────────────────────────── */
 #define LCD_WIDTH   320u
 #define LCD_HEIGHT  240u
+
+/* ── Display 태스크 / Queue 설정 ───────────────────────────────────────── */
+
+/** @brief 커맨드 큐 깊이 */
+#ifndef LCD_QUEUE_SIZE
+#define LCD_QUEUE_SIZE          8
+#endif
+
+/** @brief Display 태스크 스택 크기 (word 단위, ×4 = 바이트) */
+#ifndef LCD_TASK_STACK
+#define LCD_TASK_STACK          512
+#endif
+
+/** @brief Display 태스크 우선순위 */
+#ifndef LCD_TASK_PRIO
+#define LCD_TASK_PRIO           osPriorityNormal
+#endif
+
+/** @brief DrawString 텍스트 최대 길이 (NULL 포함) */
+#ifndef LCD_TEXT_MAX
+#define LCD_TEXT_MAX            64
+#endif
 
 /* ── RGB565 색상 매크로 ────────────────────────────────────────────────── */
 #define LCD_BLACK       0x0000
@@ -31,6 +91,31 @@
 /** @brief RGB888 → RGB565 변환 매크로 */
 #define LCD_RGB565(r, g, b) \
     ((uint16_t)(((r) & 0xF8) << 8) | (((g) & 0xFC) << 3) | (((b) & 0xF8) >> 3))
+
+/* ── 커맨드 타입 (Queue 내부용) ────────────────────────────────────────── */
+
+/** @brief LCD 커맨드 종류 */
+typedef enum {
+    LCD_CMD_FILL_SCREEN,    /**< 전체 화면 단색 채움 */
+    LCD_CMD_FILL_RECT,      /**< 사각형 영역 단색 채움 */
+    LCD_CMD_DRAW_PIXEL,     /**< 단일 픽셀 그리기 */
+    LCD_CMD_DRAW_STRING,    /**< 문자열 출력 */
+    LCD_CMD_SET_FONT,       /**< 폰트 변경 */
+    LCD_CMD_BACKLIGHT,      /**< 백라이트 ON/OFF */
+} LCD_CmdType_t;
+
+/** @brief LCD 커맨드 구조체 (Queue 메시지) */
+typedef struct {
+    LCD_CmdType_t type;
+    union {
+        struct { uint16_t color; } fillScreen;
+        struct { uint16_t x, y, w, h, color; } fillRect;
+        struct { uint16_t x, y, color; } drawPixel;
+        struct { uint16_t x, y, fg, bg; const Font_t *font; char text[LCD_TEXT_MAX]; } drawString;
+        struct { const Font_t *font; } setFont;
+        struct { uint8_t on; } backlight;
+    };
+} LCD_Cmd_t;
 
 /* ── 공개 API ──────────────────────────────────────────────────────────── */
 

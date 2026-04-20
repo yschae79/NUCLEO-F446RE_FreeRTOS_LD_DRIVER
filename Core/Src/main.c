@@ -372,7 +372,7 @@ static void MX_GPIO_Init(void)
 /** @brief UART DMA 전송 완료 콜백 */
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
 {
-    if (huart == &huart2) {
+    if (huart == &DEBUG_UART_INSTANCE) {
         Debug_TxCpltHandler();
     }
 }
@@ -380,18 +380,21 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
 /** @brief SPI DMA 전송 완료 콜백 */
 void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *hspi)
 {
-    if (hspi == &hspi2) {
+    if (hspi == &LCD_SPI_INSTANCE) {
         LCD_DmaCpltHandler();
     }
 }
 
-/** @brief 두 번째 테스트 태스크 — 700ms 주기로 printf 출력 */
+/** @brief 두 번째 테스트 태스크 — 500ms 주기로 printf + LCD 출력 (멀티태스크 검증) */
 void TestTask2Entry(void *argument)
 {
     (void)argument;
     uint32_t count = 0;
+    char buf[32];
     for (;;) {
-        printf("Task2: count=%lu\r\n", (unsigned long)count++);
+        printf("Task2: count=%lu\r\n", (unsigned long)count);
+        snprintf(buf, sizeof(buf), "Task2: %lu  ", (unsigned long)count++);
+        LCD_DrawString(16, 100, buf, LCD_YELLOW, LCD_BLACK);
         osDelay(500);
     }
 }
@@ -410,8 +413,12 @@ void StartDefaultTask(void *argument)
   /* USER CODE BEGIN 5 */
   (void)argument;
 
-  /* LCD 초기화 */
+  /* LCD 초기화 (Display 태스크 생성 → 내부에서 HW 초기화 진행) */
   LCD_Init();
+
+  /* Display 태스크의 HW 초기화 완료 대기 (RST + RegInit + SleepOut ≈ 270ms) */
+  osDelay(300);
+
   LCD_FillScreen(LCD_BLACK);
 
   /* 타이틀 출력 (16×24 폰트) */

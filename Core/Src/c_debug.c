@@ -1,11 +1,11 @@
 /**
   ******************************************************************************
   * @file           : c_debug.c
-  * @brief          : USART2 비동기 DMA 기반 디버그 printf
+  * @brief          : 비동기 DMA 기반 디버그 printf
   * @details        : syscalls.c의 weak _write()를 재정의하여
   *                   printf()가 포맷된 전체 버퍼를 링버퍼에 복사한 뒤
   *                   DMA TX를 시작하도록 처리.
-  *                   오버플로우 정책: 초과 바이트 무시 (블로킹 없음).
+  *                   오버플로우 정책: DEBUG_OVERFLOW_BLOCK (c_debug.h) 참조.
   *                   ISR 컨텍스트에서 사용 불가 (설계상).
   *                   FreeRTOS 뮤텍스로 멀티태스크 동시 접근 보호.
   ******************************************************************************
@@ -18,7 +18,7 @@
 #include <string.h>
 
 /* ----------------------- 외부 HAL 핸들 ---------------------------------- */
-extern UART_HandleTypeDef huart2;
+extern UART_HandleTypeDef DEBUG_UART_INSTANCE;
 
 /* ----------------------- 링버퍼 ----------------------------------------- */
 static uint8_t s_txBuf[DEBUG_TX_BUF_SIZE];
@@ -30,6 +30,10 @@ static volatile uint8_t  s_dmaBusy;     /**< DMA TX 진행 중: 1  */
 
 /* ----------------------- RTOS 동기화 ------------------------------------ */
 static SemaphoreHandle_t s_txMutex;     /**< 링버퍼 동시 접근 보호 뮤텍스 */
+
+#if (DEBUG_OVERFLOW_BLOCK == 1)
+static SemaphoreHandle_t s_txSpace;     /**< BLOCK 정책: 여유공간 알림 세마포어 */
+#endif
 
 /* ----------------------- Private 헬퍼 함수 ------------------------------ */
 
@@ -68,7 +72,7 @@ static void StartDMA(void)
 
     s_dmaLen  = len;
     s_dmaBusy = 1;
-    HAL_UART_Transmit_DMA(&huart2, &s_txBuf[t], len);
+    HAL_UART_Transmit_DMA(&DEBUG_UART_INSTANCE, &s_txBuf[t], len);
 }
 
 /* ----------------------- Public API ------------------------------------- */
@@ -84,6 +88,9 @@ void Debug_Init(void)
     s_dmaLen  = 0;
     s_dmaBusy = 0;
     s_txMutex = xSemaphoreCreateMutex();
+#if (DEBUG_OVERFLOW_BLOCK == 1)
+    s_txSpace = xSemaphoreCreateBinary();
+#endif
 }
 
 /**
@@ -104,6 +111,13 @@ void Debug_TxCpltHandler(void)
     if (s_head != s_tail) {
         StartDMA();
     }
+
+#if (DEBUG_OVERFLOW_BLOCK == 1)
+    /* BLOCK 정책: 여유공간 생겼음을 알림 */
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+    xSemaphoreGiveFromISR(s_txSpace, &xHigherPriorityTaskWoken);
+    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+#endif
 }
 
 /* ----------------------- _write 재정의 (syscalls.c weak 함수 대체) ------- */
@@ -129,6 +143,53 @@ int _write(int file, char *ptr, int len)
         xSemaphoreTake(s_txMutex, portMAX_DELAY);
     }
 
+#if (DEBUG_OVERFLOW_BLOCK == 1)
+    /* BLOCK 정책: 전체 len 을 링버퍼에 넣을 때까지 반복 대기 */
+    uint16_t remaining = (uint16_t)len;
+    const char *src = ptr;
+
+    while (remaining > 0) {
+        uint16_t avail = RingFree();
+        if (avail == 0) {
+            /* 뮤텍스 해제 후 여유공간 대기 → 다시 획득 */
+            if (s_txMutex != NULL && xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) {
+                xSemaphoreGive(s_txMutex);
+            }
+            xSemaphoreTake(s_txSpace, portMAX_DELAY);
+            if (s_txMutex != NULL && xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) {
+                xSemaphoreTake(s_txMutex, portMAX_DELAY);
+            }
+            continue;
+        }
+
+        uint16_t toWrite = (remaining <= avail) ? remaining : avail;
+
+        /* 링버퍼에 복사 (랩어라운드 처리) */
+        uint16_t h = s_head;
+        uint16_t firstChunk = DEBUG_TX_BUF_SIZE - h;
+
+        if (toWrite <= firstChunk) {
+            memcpy(&s_txBuf[h], src, toWrite);
+        } else {
+            memcpy(&s_txBuf[h], src, firstChunk);
+            memcpy(&s_txBuf[0], src + firstChunk, toWrite - firstChunk);
+        }
+
+        h += toWrite;
+        if (h >= DEBUG_TX_BUF_SIZE)
+            h -= DEBUG_TX_BUF_SIZE;
+        s_head = h;
+
+        src       += toWrite;
+        remaining -= toWrite;
+
+        /* DMA가 유휴 상태이면 즉시 전송 시작 */
+        if (!s_dmaBusy) {
+            StartDMA();
+        }
+    }
+#else
+    /* DROP 정책: 여유 없으면 초과 바이트 무시 */
     uint16_t avail = RingFree();
     uint16_t toWrite = ((uint16_t)len <= avail) ? (uint16_t)len : avail;
 
@@ -152,6 +213,7 @@ int _write(int file, char *ptr, int len)
     if (!s_dmaBusy) {
         StartDMA();
     }
+#endif
 
     if (s_txMutex != NULL && xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) {
         xSemaphoreGive(s_txMutex);

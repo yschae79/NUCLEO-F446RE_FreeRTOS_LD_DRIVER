@@ -1,0 +1,81 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Build (Release)",
+            "type": "shell",
+            "command": "cube-cmake",
+            "args": [
+                "--build",
+                "--preset",
+                "Release"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": "$gcc",
+            "options": {
+                "statusbar": {
+                    "hide": true
+                }
+            }
+        },
+        {
+            "label": "Flash (Release)",
+            "type": "process",
+            "command": "C:/Program Files/STMicroelectronics/STM32Cube/STM32CubeProgrammer/bin/STM32_Programmer_CLI.exe",
+            "args": [
+                "-c",
+                "port=SWD",
+                "-w",
+                "${workspaceFolder}/build/Release/NUCLEO-F446RE_FreeRTOS_LD_DRIVER.elf",
+                "-v",
+                "-rst"
+            ],
+            "problemMatcher": [],
+            "options": {
+                "statusbar": {
+                    "hide": true
+                }
+            }
+        },
+        {
+            "label": "Build + Flash",
+            "dependsOn": [
+                "Build (Release)",
+                "Flash (Release)"
+            ],
+            "dependsOrder": "sequence",
+            "problemMatcher": [],
+            "options": {
+                "statusbar": {
+                    "label": "$(rocket) Build+Flash",
+                    "color": "#89D185",
+                    "detail": "Release 빌드 후 SWD 플래시"
+                }
+            }
+        },
+        {
+            "label": "Clean (Release)",
+            "type": "shell",
+            "command": "cube-cmake",
+            "args": [
+                "--build",
+                "--preset",
+                "Release",
+                "--",
+                "-t",
+                "clean"
+            ],
+            "problemMatcher": [],
+            "options": {
+                "statusbar": {
+                    "label": "$(trash) Clean",
+                    "color": "#E06C75",
+                    "detail": "Release 빌드 클린"
+                }
+            }
+        }
+    ]
+}

@@ -22,7 +22,8 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "c_debug.h"
+#include <stdio.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -48,10 +49,18 @@ DMA_HandleTypeDef hdma_usart2_tx;
 osThreadId_t MainTaskHandle;
 const osThreadAttr_t MainTask_attributes = {
   .name = "MainTask",
-  .stack_size = 256 * 4,
+  .stack_size = 512 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
 /* USER CODE BEGIN PV */
+
+/** @brief 두 번째 테스트 태스크 핸들 */
+osThreadId_t TestTask2Handle;
+const osThreadAttr_t TestTask2_attributes = {
+    .name = "TestTask2",
+    .stack_size = 512 * 4,
+    .priority = (osPriority_t) osPriorityNormal,
+};
 
 /* USER CODE END PV */
 
@@ -63,7 +72,7 @@ static void MX_USART2_UART_Init(void);
 void StartDefaultTask(void *argument);
 
 /* USER CODE BEGIN PFP */
-
+void TestTask2Entry(void *argument);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -103,7 +112,7 @@ int main(void)
   MX_DMA_Init();
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
-
+  Debug_Init();
   /* USER CODE END 2 */
 
   /* Init scheduler */
@@ -130,7 +139,7 @@ int main(void)
   MainTaskHandle = osThreadNew(StartDefaultTask, NULL, &MainTask_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
-  /* add threads, ... */
+  TestTask2Handle = osThreadNew(TestTask2Entry, NULL, &TestTask2_attributes);
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
@@ -290,6 +299,25 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 
+/** @brief UART DMA 전송 완료 콜백 */
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
+{
+    if (huart == &huart2) {
+        Debug_TxCpltHandler();
+    }
+}
+
+/** @brief 두 번째 테스트 태스크 — 700ms 주기로 printf 출력 */
+void TestTask2Entry(void *argument)
+{
+    (void)argument;
+    uint32_t count = 0;
+    for (;;) {
+        printf("Task2: count=%lu\r\n", (unsigned long)count++);
+        osDelay(700);
+    }
+}
+
 /* USER CODE END 4 */
 
 /* USER CODE BEGIN Header_StartDefaultTask */
@@ -302,10 +330,11 @@ static void MX_GPIO_Init(void)
 void StartDefaultTask(void *argument)
 {
   /* USER CODE BEGIN 5 */
-  /* Infinite loop */
-  for(;;)
-  {
-    osDelay(1);
+  (void)argument;
+  uint32_t count = 0;
+  for (;;) {
+      printf("Task1: count=%lu\r\n", (unsigned long)count++);
+      osDelay(500);
   }
   /* USER CODE END 5 */
 }

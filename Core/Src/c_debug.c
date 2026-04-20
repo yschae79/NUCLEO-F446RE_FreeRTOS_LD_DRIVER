@@ -1,0 +1,161 @@
+/**
+  ******************************************************************************
+  * @file           : c_debug.c
+  * @brief          : USART2 비동기 DMA 기반 디버그 printf
+  * @details        : syscalls.c의 weak _write()를 재정의하여
+  *                   printf()가 포맷된 전체 버퍼를 링버퍼에 복사한 뒤
+  *                   DMA TX를 시작하도록 처리.
+  *                   오버플로우 정책: 초과 바이트 무시 (블로킹 없음).
+  *                   ISR 컨텍스트에서 사용 불가 (설계상).
+  *                   FreeRTOS 뮤텍스로 멀티태스크 동시 접근 보호.
+  ******************************************************************************
+  */
+
+#include "c_debug.h"
+#include "main.h"
+#include "FreeRTOS.h"
+#include "semphr.h"
+#include <string.h>
+
+/* ----------------------- 외부 HAL 핸들 ---------------------------------- */
+extern UART_HandleTypeDef huart2;
+
+/* ----------------------- 링버퍼 ----------------------------------------- */
+static uint8_t s_txBuf[DEBUG_TX_BUF_SIZE];
+
+static volatile uint16_t s_head;        /**< 다음 쓰기 위치      */
+static volatile uint16_t s_tail;        /**< 다음 DMA 읽기 위치  */
+static volatile uint16_t s_dmaLen;      /**< 현재 DMA 전송 중인 바이트 수 */
+static volatile uint8_t  s_dmaBusy;     /**< DMA TX 진행 중: 1  */
+
+/* ----------------------- RTOS 동기화 ------------------------------------ */
+static SemaphoreHandle_t s_txMutex;     /**< 링버퍼 동시 접근 보호 뮤텍스 */
+
+/* ----------------------- Private 헬퍼 함수 ------------------------------ */
+
+/**
+ * @brief  링버퍼에 쓸 수 있는 여유 바이트 수 반환
+ * @retval 여유 바이트 수
+ */
+static inline uint16_t RingFree(void)
+{
+    uint16_t h = s_head;
+    uint16_t t = s_tail;
+    /* full과 empty 구분을 위해 슬롯 1개 항상 낭비 */
+    if (h >= t)
+        return (DEBUG_TX_BUF_SIZE - 1u) - (h - t);
+    else
+        return (t - h) - 1u;
+}
+
+/**
+ * @brief  tail 이후 연속 블록을 DMA 전송 시작
+ * @note   s_dmaBusy == 0 이고 전송할 데이터가 있을 때만 호출
+ */
+static void StartDMA(void)
+{
+    uint16_t h = s_head;
+    uint16_t t = s_tail;
+
+    if (t == h) return;                 /* 전송할 데이터 없음 */
+
+    uint16_t len;
+    if (h > t) {
+        len = h - t;                    /* 연속 블록: tail → head */
+    } else {
+        len = DEBUG_TX_BUF_SIZE - t;    /* 연속 블록: tail → 버퍼 끝 */
+    }
+
+    s_dmaLen  = len;
+    s_dmaBusy = 1;
+    HAL_UART_Transmit_DMA(&huart2, &s_txBuf[t], len);
+}
+
+/* ----------------------- Public API ------------------------------------- */
+
+/**
+ * @brief  비동기 디버그 출력 초기화
+ * @note   MX_USART2_UART_Init() 이후, osKernelInitialize() 이전에 호출
+ */
+void Debug_Init(void)
+{
+    s_head    = 0;
+    s_tail    = 0;
+    s_dmaLen  = 0;
+    s_dmaBusy = 0;
+    s_txMutex = xSemaphoreCreateMutex();
+}
+
+/**
+ * @brief  DMA TX 완료 핸들러 (ISR 컨텍스트)
+ * @note   HAL_UART_TxCpltCallback 에서 huart == &huart2 일 때 호출
+ */
+void Debug_TxCpltHandler(void)
+{
+    /* 방금 전송한 블록만큼 tail 전진 */
+    uint16_t t = s_tail + s_dmaLen;
+    if (t >= DEBUG_TX_BUF_SIZE)
+        t -= DEBUG_TX_BUF_SIZE;
+    s_tail    = t;
+    s_dmaLen  = 0;
+    s_dmaBusy = 0;
+
+    /* 대기 중인 데이터가 있으면 다음 청크 시작 */
+    if (s_head != s_tail) {
+        StartDMA();
+    }
+}
+
+/* ----------------------- _write 재정의 (syscalls.c weak 함수 대체) ------- */
+
+/**
+ * @brief  _write() 재정의 — printf()가 DMA 링버퍼를 통해 출력되도록 처리
+ * @param  file  파일 디스크립터 (미사용)
+ * @param  ptr   출력할 데이터 포인터
+ * @param  len   출력할 바이트 수
+ * @retval 요청된 len (일부 드롭 시에도 동일)
+ *
+ * @note   ISR 컨텍스트에서 사용 불가 (설계상 — ISR에서 printf 미사용)
+ * @note   링버퍼가 가득 찬 경우 초과 바이트는 무시됨
+ */
+int _write(int file, char *ptr, int len)
+{
+    (void)file;
+
+    if (len <= 0) return 0;
+
+    /* 스케줄러 시작 전에는 뮤텍스 없이 직접 접근 (Debug_Init 직후 등) */
+    if (s_txMutex != NULL && xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) {
+        xSemaphoreTake(s_txMutex, portMAX_DELAY);
+    }
+
+    uint16_t avail = RingFree();
+    uint16_t toWrite = ((uint16_t)len <= avail) ? (uint16_t)len : avail;
+
+    /* 링버퍼에 복사 (랩어라운드 처리) */
+    uint16_t h = s_head;
+    uint16_t firstChunk = DEBUG_TX_BUF_SIZE - h;
+
+    if (toWrite <= firstChunk) {
+        memcpy(&s_txBuf[h], ptr, toWrite);
+    } else {
+        memcpy(&s_txBuf[h], ptr, firstChunk);
+        memcpy(&s_txBuf[0], ptr + firstChunk, toWrite - firstChunk);
+    }
+
+    h += toWrite;
+    if (h >= DEBUG_TX_BUF_SIZE)
+        h -= DEBUG_TX_BUF_SIZE;
+    s_head = h;
+
+    /* DMA가 유휴 상태이면 즉시 전송 시작 */
+    if (!s_dmaBusy) {
+        StartDMA();
+    }
+
+    if (s_txMutex != NULL && xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) {
+        xSemaphoreGive(s_txMutex);
+    }
+
+    return len;     /* 일부 바이트가 드롭됐더라도 요청한 len 전체를 반환 */
+}

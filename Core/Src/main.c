@@ -314,7 +314,7 @@ void TestTask2Entry(void *argument)
     uint32_t count = 0;
     for (;;) {
         printf("Task2: count=%lu\r\n", (unsigned long)count++);
-        osDelay(700);
+        osDelay(500);
     }
 }
 

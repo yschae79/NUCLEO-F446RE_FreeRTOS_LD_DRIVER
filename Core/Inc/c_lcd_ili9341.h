@@ -49,6 +49,15 @@
 #define LCD_PIN_LED_PIN         LCD_LED_Pin
 #endif
 
+/** @brief CS (Chip Select) 핀 포트 (Software NSS) */
+#ifndef LCD_PIN_CS_PORT
+#define LCD_PIN_CS_PORT         LCD_CS_GPIO_Port
+#endif
+/** @brief CS 핀 번호 */
+#ifndef LCD_PIN_CS_PIN
+#define LCD_PIN_CS_PIN          LCD_CS_Pin
+#endif
+
 /* ── 화면 크기 (Landscape) ─────────────────────────────────────────────── */
 #define LCD_WIDTH   320u
 #define LCD_HEIGHT  240u

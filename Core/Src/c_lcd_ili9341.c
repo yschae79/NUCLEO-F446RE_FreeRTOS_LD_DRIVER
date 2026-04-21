@@ -64,6 +64,18 @@ static inline void RST_High(void)
     HAL_GPIO_WritePin(LCD_PIN_RST_PORT, LCD_PIN_RST_PIN, GPIO_PIN_SET);
 }
 
+/** @brief CS 핀 LOW (SPI 선택) */
+static inline void CS_Select(void)
+{
+    HAL_GPIO_WritePin(LCD_PIN_CS_PORT, LCD_PIN_CS_PIN, GPIO_PIN_RESET);
+}
+
+/** @brief CS 핀 HIGH (SPI 해제) */
+static inline void CS_Deselect(void)
+{
+    HAL_GPIO_WritePin(LCD_PIN_CS_PORT, LCD_PIN_CS_PIN, GPIO_PIN_SET);
+}
+
 /* ── SPI 전송 헬퍼 ─────────────────────────────────────────────────────── */
 
 /**
@@ -72,8 +84,10 @@ static inline void RST_High(void)
  */
 static void SendCmd(uint8_t cmd)
 {
+    CS_Select();
     DC_Command();
     HAL_SPI_Transmit(&LCD_SPI_INSTANCE, &cmd, 1, HAL_MAX_DELAY);
+    CS_Deselect();
 }
 
 /**
@@ -83,8 +97,10 @@ static void SendCmd(uint8_t cmd)
  */
 static void SendData(const uint8_t *data, uint16_t len)
 {
+    CS_Select();
     DC_Data();
     HAL_SPI_Transmit(&LCD_SPI_INSTANCE, (uint8_t *)data, len, HAL_MAX_DELAY);
+    CS_Deselect();
 }
 
 /**
@@ -93,8 +109,10 @@ static void SendData(const uint8_t *data, uint16_t len)
  */
 static void SendData8(uint8_t val)
 {
+    CS_Select();
     DC_Data();
     HAL_SPI_Transmit(&LCD_SPI_INSTANCE, &val, 1, HAL_MAX_DELAY);
+    CS_Deselect();
 }
 
 /**
@@ -104,9 +122,11 @@ static void SendData8(uint8_t val)
  */
 static void SendDataDMA(uint8_t *data, uint16_t len)
 {
+    CS_Select();
     DC_Data();
     HAL_SPI_Transmit_DMA(&LCD_SPI_INSTANCE, data, len);
     osSemaphoreAcquire(s_dmaSem, DMA_TIMEOUT_MS);
+    CS_Deselect();
 }
 
 /* ── ILI9341 초기화 시퀀스 ─────────────────────────────────────────────── */

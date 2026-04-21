@@ -9,7 +9,7 @@
  *          - 대량 데이터(>32B): DMA + 바이너리 세마포어 대기
  */
 #include "c_lcd_ili9341.h"
-#include "cmsis_os.h"
+#include "tx_api.h"
 #include <string.h>
 
 /* ── 외부 핸들 ─────────────────────────────────────────────────────────── */
@@ -24,7 +24,7 @@ extern SPI_HandleTypeDef LCD_SPI_INSTANCE;
 
 /* ── 내부 변수 ─────────────────────────────────────────────────────────── */
 /** @brief DMA 전송 완료 동기화용 바이너리 세마포어 */
-static osSemaphoreId_t s_dmaSem;
+static TX_SEMAPHORE    s_dmaSem;
 
 /** @brief DMA 라인 버퍼 (1 스캔라인 = 320 × 2바이트 = 640바이트) */
 static uint8_t s_lineBuf[LCD_WIDTH * 2];
@@ -32,11 +32,21 @@ static uint8_t s_lineBuf[LCD_WIDTH * 2];
 /** @brief 현재 선택된 폰트 (Display 태스크 전용) */
 static const Font_t *s_font = NULL;
 
-/** @brief 커맨드 큐 핸들 */
-static osMessageQueueId_t s_cmdQueue;
+/**
+ * @brief 커맨드를 포인터로 전달하는 TX_QUEUE (1 ULONG = 포인터 크기)
+ * @note  TX_QUEUE 메시지 크기 최대 = 64B, LCD_Cmd_t = 80B 이상이므로 포인터 방식 사용
+ */
+static TX_QUEUE        s_cmdQueue;
+static ULONG           s_cmdQueueBuf[LCD_QUEUE_SIZE];
 
-/** @brief Display 태스크 핸들 */
-static osThreadId_t s_displayTask;
+/** @brief LCD 커맨드 풀 — 생산자가 슬롯을 빌린 후 포인터를 큐에 전송 */
+static LCD_Cmd_t       s_cmdPool[LCD_QUEUE_SIZE];
+static TX_SEMAPHORE    s_poolSem;          /**< 자유 슬롯 개수, 초기값 = LCD_QUEUE_SIZE */
+static UINT            s_poolIdx;          /**< 다음 할당 인덱스 */
+
+/** @brief Display 태스크 TCB + 스택 */
+static TX_THREAD       s_displayTask;
+static ULONG           s_displayStack[LCD_TASK_STACK];
 
 /* ── GPIO 헬퍼 (인라인) ────────────────────────────────────────────────── */
 
@@ -125,7 +135,7 @@ static void SendDataDMA(uint8_t *data, uint16_t len)
     CS_Select();
     DC_Data();
     HAL_SPI_Transmit_DMA(&LCD_SPI_INSTANCE, data, len);
-    osSemaphoreAcquire(s_dmaSem, DMA_TIMEOUT_MS);
+    tx_semaphore_get(&s_dmaSem, DMA_TIMEOUT_MS);
     CS_Deselect();
 }
 
@@ -419,25 +429,25 @@ static void Internal_Backlight(uint8_t on)
  * @brief  Display 태스크 엔트리 — 큐에서 커맨드를 수신하여 순차 렌더링
  * @param  argument  미사용
  */
-static void DisplayTaskEntry(void *argument)
+static void DisplayTaskEntry(ULONG argument)
 {
     (void)argument;
 
     /* 하드웨어 초기화 (태스크 컨텍스트에서 osDelay 사용 가능) */
     RST_Low();
-    osDelay(10);
+    tx_thread_sleep(10);
     RST_High();
-    osDelay(120);
+    tx_thread_sleep(120);
 
     ILI9341_RegInit();
 
     /* Sleep Out */
     SendCmd(0x11);
-    osDelay(120);
+    tx_thread_sleep(120);
 
     /* Display ON */
     SendCmd(0x29);
-    osDelay(20);
+    tx_thread_sleep(20);
 
     /* 백라이트 ON */
     Internal_Backlight(1);
@@ -448,7 +458,12 @@ static void DisplayTaskEntry(void *argument)
     /* 커맨드 처리 루프 */
     LCD_Cmd_t cmd;
     for (;;) {
-        if (osMessageQueueGet(s_cmdQueue, &cmd, NULL, osWaitForever) == osOK) {
+        ULONG msg = 0;
+        if (tx_queue_receive(&s_cmdQueue, &msg, TX_WAIT_FOREVER) == TX_SUCCESS) {
+            LCD_Cmd_t *p = (LCD_Cmd_t *)msg;
+            cmd = *p;
+            /* 풀 슬롯 반환 */
+            tx_semaphore_put(&s_poolSem);
             switch (cmd.type) {
             case LCD_CMD_FILL_SCREEN:
                 Internal_FillScreen(cmd.fillScreen.color);
@@ -485,82 +500,107 @@ static void DisplayTaskEntry(void *argument)
 
 void LCD_Init(void)
 {
-    /* DMA 완료 동기화용 바이너리 세마포어 생성 */
-    s_dmaSem = osSemaphoreNew(1, 0, NULL);
+    /* DMA 완료 세마포어 (초기값=0: 전송 전 잠긴 상태) */
+    tx_semaphore_create(&s_dmaSem, "lcd_dma", 0);
 
-    /* 커맨드 큐 생성 */
-    s_cmdQueue = osMessageQueueNew(LCD_QUEUE_SIZE, sizeof(LCD_Cmd_t), NULL);
+    /* 커맨드 풀 + 포인터 큐 설정 */
+    s_poolIdx = 0;
+    tx_semaphore_create(&s_poolSem, "lcd_pool", (ULONG)LCD_QUEUE_SIZE);
+    tx_queue_create(&s_cmdQueue, "lcd_q", TX_1_ULONG,
+                    s_cmdQueueBuf, sizeof(s_cmdQueueBuf));
 
     /* Display 태스크 생성 */
-    const osThreadAttr_t attr = {
-        .name       = "DisplayTask",
-        .stack_size = LCD_TASK_STACK * 4,
-        .priority   = (osPriority_t)LCD_TASK_PRIO,
-    };
-    s_displayTask = osThreadNew(DisplayTaskEntry, NULL, &attr);
+    tx_thread_create(&s_displayTask, "DisplayTask", DisplayTaskEntry, 0,
+                     s_displayStack, sizeof(s_displayStack),
+                     LCD_TASK_PRIO, LCD_TASK_PRIO,
+                     TX_NO_TIME_SLICE, TX_AUTO_START);
 }
 
 void LCD_DmaCpltHandler(void)
 {
-    osSemaphoreRelease(s_dmaSem);
+    tx_semaphore_put(&s_dmaSem);
+}
+
+/* 풀에서 커맨드 슬롯 할당 (단일 생산자 타고용 — 다중 생산자 필요 시 TX_MUTEX 추가) */
+static LCD_Cmd_t *AllocCmd(void)
+{
+    tx_semaphore_get(&s_poolSem, TX_WAIT_FOREVER);
+    UINT idx = s_poolIdx;
+    s_poolIdx = (idx + 1u >= (UINT)LCD_QUEUE_SIZE) ? 0u : idx + 1u;
+    return &s_cmdPool[idx];
 }
 
 void LCD_FillScreen(uint16_t color)
 {
-    LCD_Cmd_t cmd = { .type = LCD_CMD_FILL_SCREEN, .fillScreen = { .color = color } };
-    osMessageQueuePut(s_cmdQueue, &cmd, 0, osWaitForever);
+    LCD_Cmd_t *p = AllocCmd();
+    p->type = LCD_CMD_FILL_SCREEN;
+    p->fillScreen.color = color;
+    ULONG msg = (ULONG)p;
+    tx_queue_send(&s_cmdQueue, &msg, TX_WAIT_FOREVER);
 }
 
 void LCD_FillRect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t color)
 {
-    LCD_Cmd_t cmd = {
-        .type = LCD_CMD_FILL_RECT,
-        .fillRect = { .x = x, .y = y, .w = w, .h = h, .color = color }
-    };
-    osMessageQueuePut(s_cmdQueue, &cmd, 0, osWaitForever);
+    LCD_Cmd_t *p = AllocCmd();
+    p->type = LCD_CMD_FILL_RECT;
+    p->fillRect.x = x; p->fillRect.y = y;
+    p->fillRect.w = w; p->fillRect.h = h;
+    p->fillRect.color = color;
+    ULONG msg = (ULONG)p;
+    tx_queue_send(&s_cmdQueue, &msg, TX_WAIT_FOREVER);
 }
 
 void LCD_DrawPixel(uint16_t x, uint16_t y, uint16_t color)
 {
-    LCD_Cmd_t cmd = {
-        .type = LCD_CMD_DRAW_PIXEL,
-        .drawPixel = { .x = x, .y = y, .color = color }
-    };
-    osMessageQueuePut(s_cmdQueue, &cmd, 0, osWaitForever);
+    LCD_Cmd_t *p = AllocCmd();
+    p->type = LCD_CMD_DRAW_PIXEL;
+    p->drawPixel.x = x; p->drawPixel.y = y;
+    p->drawPixel.color = color;
+    ULONG msg = (ULONG)p;
+    tx_queue_send(&s_cmdQueue, &msg, TX_WAIT_FOREVER);
 }
 
 void LCD_SetFont(const Font_t *font)
 {
-    LCD_Cmd_t cmd = { .type = LCD_CMD_SET_FONT, .setFont = { .font = font } };
-    osMessageQueuePut(s_cmdQueue, &cmd, 0, osWaitForever);
+    LCD_Cmd_t *p = AllocCmd();
+    p->type = LCD_CMD_SET_FONT;
+    p->setFont.font = font;
+    ULONG msg = (ULONG)p;
+    tx_queue_send(&s_cmdQueue, &msg, TX_WAIT_FOREVER);
 }
 
 void LCD_DrawChar(uint16_t x, uint16_t y, char ch, uint16_t fg, uint16_t bg)
 {
-    /* 단일 문자를 1글자 문자열로 변환하여 DrawString 커맨드로 전달 */
-    LCD_Cmd_t cmd = {
-        .type = LCD_CMD_DRAW_STRING,
-        .drawString = { .x = x, .y = y, .fg = fg, .bg = bg, .font = NULL, .text = { ch, '\0' } }
-    };
-    osMessageQueuePut(s_cmdQueue, &cmd, 0, osWaitForever);
+    LCD_Cmd_t *p = AllocCmd();
+    p->type = LCD_CMD_DRAW_STRING;
+    p->drawString.x = x; p->drawString.y = y;
+    p->drawString.fg = fg; p->drawString.bg = bg;
+    p->drawString.font = NULL;
+    p->drawString.text[0] = ch;
+    p->drawString.text[1] = '\0';
+    ULONG msg = (ULONG)p;
+    tx_queue_send(&s_cmdQueue, &msg, TX_WAIT_FOREVER);
 }
 
 void LCD_DrawString(uint16_t x, uint16_t y, const char *str, uint16_t fg, uint16_t bg)
 {
     if (str == NULL) return;
-
-    LCD_Cmd_t cmd = {
-        .type = LCD_CMD_DRAW_STRING,
-        .drawString = { .x = x, .y = y, .fg = fg, .bg = bg, .font = NULL }
-    };
-    /* 텍스트를 커맨드 구조체 내부 버퍼에 복사 (호출자 스택 독립) */
-    strncpy(cmd.drawString.text, str, LCD_TEXT_MAX - 1);
-    cmd.drawString.text[LCD_TEXT_MAX - 1] = '\0';
-    osMessageQueuePut(s_cmdQueue, &cmd, 0, osWaitForever);
+    LCD_Cmd_t *p = AllocCmd();
+    p->type = LCD_CMD_DRAW_STRING;
+    p->drawString.x = x; p->drawString.y = y;
+    p->drawString.fg = fg; p->drawString.bg = bg;
+    p->drawString.font = NULL;
+    strncpy(p->drawString.text, str, LCD_TEXT_MAX - 1);
+    p->drawString.text[LCD_TEXT_MAX - 1] = '\0';
+    ULONG msg = (ULONG)p;
+    tx_queue_send(&s_cmdQueue, &msg, TX_WAIT_FOREVER);
 }
 
 void LCD_Backlight(uint8_t on)
 {
-    LCD_Cmd_t cmd = { .type = LCD_CMD_BACKLIGHT, .backlight = { .on = on } };
-    osMessageQueuePut(s_cmdQueue, &cmd, 0, osWaitForever);
+    LCD_Cmd_t *p = AllocCmd();
+    p->type = LCD_CMD_BACKLIGHT;
+    p->backlight.on = on;
+    ULONG msg = (ULONG)p;
+    tx_queue_send(&s_cmdQueue, &msg, TX_WAIT_FOREVER);
 }

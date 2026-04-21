@@ -10,8 +10,7 @@
  */
 #include "c_adc.h"
 #include "main.h"
-#include "FreeRTOS.h"
-#include "task.h"
+#include "tx_api.h"
 #include <string.h>
 
 /* ── 외부 핸들 선언 ──────────────────────────────────────────────────── */
@@ -34,21 +33,16 @@ extern TIM_HandleTypeDef ADC_TIM_INSTANCE;
  */
 static volatile uint16_t s_adcDmaBuf[ADC_DMA_BUF_SIZE];
 
-/** @brief ADC 태스크 핸들 — HT/TC 콜백에서 플래그 전송 시 사용 */
-static osThreadId_t s_adcTaskHandle;
-
-/** @brief ADC 태스크 속성 */
-static const osThreadAttr_t s_adcTaskAttr = {
-    .name       = "AdcTask",
-    .stack_size = ADC_TASK_STACK * 4u,
-    .priority   = (osPriority_t)ADC_TASK_PRIO,
-};
+/** @brief ADC 이벤트 플래그 그룹 — HT/TC 신호 전달 */
+static TX_EVENT_FLAGS_GROUP s_adcFlags;
+static TX_THREAD            s_adcTcb;
+static ULONG                s_adcStack[ADC_TASK_STACK];
 
 /* ── 공유 결과 버퍼 정의 ─────────────────────────────────────────────── */
 volatile uint16_t g_adcResult[ADC_CH_COUNT];
 
 /* ── 내부 함수 선언 ──────────────────────────────────────────────────── */
-static void AdcTask(void *argument);
+static void AdcTask(ULONG argument);
 
 /* ═══════════════════════════════════════════════════════════════════════ */
 /* 공개 API 구현                                                           */
@@ -64,7 +58,11 @@ void ADC_Init(void)
 {
     memset((void *)s_adcDmaBuf, 0, sizeof(s_adcDmaBuf));
     memset((void *)g_adcResult,  0, sizeof(g_adcResult));
-    s_adcTaskHandle = osThreadNew(AdcTask, NULL, &s_adcTaskAttr);
+    tx_event_flags_create(&s_adcFlags, "adc_flags");
+    tx_thread_create(&s_adcTcb, "AdcTask", AdcTask, 0,
+                     s_adcStack, sizeof(s_adcStack),
+                     ADC_TASK_PRIO, ADC_TASK_PRIO,
+                     TX_NO_TIME_SLICE, TX_AUTO_START);
 }
 
 /**
@@ -74,7 +72,7 @@ void ADC_Init(void)
  */
 void ADC_HalfCpltHandler(void)
 {
-    osThreadFlagsSet(s_adcTaskHandle, FLAG_HT);
+    tx_event_flags_set(&s_adcFlags, FLAG_HT, TX_OR);
 }
 
 /**
@@ -82,7 +80,7 @@ void ADC_HalfCpltHandler(void)
  */
 void ADC_CpltHandler(void)
 {
-    osThreadFlagsSet(s_adcTaskHandle, FLAG_TC);
+    tx_event_flags_set(&s_adcFlags, FLAG_TC, TX_OR);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════ */
@@ -99,7 +97,7 @@ void ADC_CpltHandler(void)
  *
  *          Circular 모드이므로 TC 이후 DMA가 자동으로 인덱스 0부터 재시작.
  */
-static void AdcTask(void *argument)
+static void AdcTask(ULONG argument)
 {
     (void)argument;
 
@@ -115,9 +113,10 @@ static void AdcTask(void *argument)
     for (;;)
     {
         /* HT 또는 TC 중 어느 하나라도 수신될 때까지 블로킹 대기 */
-        uint32_t flags = osThreadFlagsWait(FLAG_HT | FLAG_TC,
-                                           osFlagsWaitAny,
-                                           osWaitForever);
+        ULONG actual_flags = 0;
+        tx_event_flags_get(&s_adcFlags, FLAG_HT | FLAG_TC,
+                           TX_OR_CLEAR, &actual_flags, TX_WAIT_FOREVER);
+        uint32_t flags = (uint32_t)actual_flags;
 
         if (flags & FLAG_HT)
         {

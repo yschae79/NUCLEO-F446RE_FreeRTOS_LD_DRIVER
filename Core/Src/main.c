@@ -17,11 +17,12 @@
   */
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
+#include "app_threadx.h"
 #include "main.h"
-#include "cmsis_os.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "tx_api.h"
 #include "c_debug.h"
 #include "c_lcd_ili9341.h"
 #include "c_adc.h"
@@ -55,23 +56,11 @@ TIM_HandleTypeDef htim2;
 UART_HandleTypeDef huart2;
 DMA_HandleTypeDef hdma_usart2_tx;
 
-/* Definitions for MainTask */
-osThreadId_t MainTaskHandle;
-const osThreadAttr_t MainTask_attributes = {
-  .name = "MainTask",
-  .stack_size = 512 * 4,
-  .priority = (osPriority_t) osPriorityNormal,
-};
 /* USER CODE BEGIN PV */
-
-/** @brief 두 번째 테스트 태스크 핸들 */
-osThreadId_t TestTask2Handle;
-const osThreadAttr_t TestTask2_attributes = {
-    .name = "TestTask2",
-    .stack_size = 512 * 4,
-    .priority = (osPriority_t) osPriorityNormal,
-};
-
+/** @brief MainTask TCB (LCD 표시 루프) */
+TX_THREAD MainTaskHandle;
+/** @brief TestTask2 TCB (ADC printf) */
+TX_THREAD TestTask2Handle;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -82,10 +71,9 @@ static void MX_USART2_UART_Init(void);
 static void MX_SPI2_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_TIM2_Init(void);
-void StartDefaultTask(void *argument);
-
 /* USER CODE BEGIN PFP */
-void TestTask2Entry(void *argument);
+void TestTask2Entry(ULONG argument);
+void StartDefaultTask(ULONG argument);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -131,40 +119,7 @@ int main(void)
   Debug_Init();
   /* USER CODE END 2 */
 
-  /* Init scheduler */
-  osKernelInitialize();
-
-  /* USER CODE BEGIN RTOS_MUTEX */
-  /* add mutexes, ... */
-  /* USER CODE END RTOS_MUTEX */
-
-  /* USER CODE BEGIN RTOS_SEMAPHORES */
-  /* add semaphores, ... */
-  /* USER CODE END RTOS_SEMAPHORES */
-
-  /* USER CODE BEGIN RTOS_TIMERS */
-  /* start timers, add new ones, ... */
-  /* USER CODE END RTOS_TIMERS */
-
-  /* USER CODE BEGIN RTOS_QUEUES */
-  /* add queues, ... */
-  /* USER CODE END RTOS_QUEUES */
-
-  /* Create the thread(s) */
-  /* creation of MainTask */
-  MainTaskHandle = osThreadNew(StartDefaultTask, NULL, &MainTask_attributes);
-
-  /* USER CODE BEGIN RTOS_THREADS */
-  TestTask2Handle = osThreadNew(TestTask2Entry, NULL, &TestTask2_attributes);
-  ADC_Init();
-  /* USER CODE END RTOS_THREADS */
-
-  /* USER CODE BEGIN RTOS_EVENTS */
-  /* add events, ... */
-  /* USER CODE END RTOS_EVENTS */
-
-  /* Start scheduler */
-  osKernelStart();
+  MX_ThreadX_Init();
 
   /* We should never get here as control is now taken by the scheduler */
 
@@ -496,13 +451,13 @@ static void MX_DMA_Init(void)
 
   /* DMA interrupt init */
   /* DMA1_Stream4_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA1_Stream4_IRQn, 5, 0);
+  HAL_NVIC_SetPriority(DMA1_Stream4_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Stream4_IRQn);
   /* DMA1_Stream6_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA1_Stream6_IRQn, 5, 0);
+  HAL_NVIC_SetPriority(DMA1_Stream6_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Stream6_IRQn);
   /* DMA2_Stream0_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 5, 0);
+  HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA2_Stream0_IRQn);
 
 }
@@ -607,7 +562,7 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
 }
 
 /** @brief 두 번째 테스트 태스크 — 1s 주기로 ADC 10채널 전체 printf 출력 */
-void TestTask2Entry(void *argument)
+void TestTask2Entry(ULONG argument)
 {
     (void)argument;
     for (;;) {
@@ -625,20 +580,16 @@ void TestTask2Entry(void *argument)
                (unsigned)g_adcResult[4], (unsigned)g_adcResult[5],
                (unsigned)g_adcResult[6], (unsigned)g_adcResult[7],
                (long)temp, (unsigned long)vdda);
-        osDelay(1000);
+        tx_thread_sleep(1000);
     }
 }
 
-/* USER CODE END 4 */
-
-/* USER CODE BEGIN Header_StartDefaultTask */
 /**
   * @brief  Function implementing the MainTask thread.
   * @param  argument: Not used
   * @retval None
   */
-/* USER CODE END Header_StartDefaultTask */
-void StartDefaultTask(void *argument)
+void StartDefaultTask(ULONG argument)
 {
   /* USER CODE BEGIN 5 */
   (void)argument;
@@ -647,7 +598,7 @@ void StartDefaultTask(void *argument)
   LCD_Init();
 
   /* Display 태스크의 HW 초기화 완료 대기 (RST + RegInit + SleepOut ≈ 270ms) */
-  osDelay(300);
+  tx_thread_sleep(300);
 
   LCD_FillScreen(LCD_BLACK);
 
@@ -682,38 +633,30 @@ void StartDefaultTask(void *argument)
                (unsigned)g_adcResult[6], (unsigned)g_adcResult[7]);
       LCD_DrawString(4, 82, buf, LCD_WHITE, LCD_BLACK);
 
-      /* VDDA 계산 (팩토리 캘리브레이션 기반, mV 단위)
-       * VDDA_mV = 3300 * VREFINT_CAL / ADC_VREFINT
-       * VREFINT_CAL: 0x1FFF7A2A, 3.3V/30°C 조건 측정값 */
       uint32_t vrefint_cal = (uint32_t)(*VREFINT_CAL_ADDR);
       uint32_t vdda_mv = (vrefint_cal > 0u)
                          ? (3300u * vrefint_cal / (uint32_t)g_adcResult[9])
                          : 3300u;
 
-      /* 온도 계산 (팩토리 캘리브레이션 기반, 정수 °C)
-       * VDDA 보정 후 온도 = (TS_ADC * VDDA / 3300 - TS_CAL1)
-       *                     * (110 - 30) / (TS_CAL2 - TS_CAL1) + 30
-       * TEMPSENSOR_CAL1_ADDR: 0x1FFF7A2C (30°C 기준)
-       * TEMPSENSOR_CAL2_ADDR: 0x1FFF7A2E (110°C 기준) */
       int32_t ts_cal1  = (int32_t)(*TEMPSENSOR_CAL1_ADDR);
       int32_t ts_cal2  = (int32_t)(*TEMPSENSOR_CAL2_ADDR);
       int32_t ts_raw   = (int32_t)(uint32_t)g_adcResult[8];
-      /* VDDA 보정: ADC 값을 3.3V 기준으로 환산 */
       int32_t ts_corr  = (int32_t)(ts_raw * vdda_mv / 3300u);
       int32_t temp_c   = ((ts_corr - ts_cal1) * (110 - 30)
                          / (ts_cal2 - ts_cal1)) + 30;
 
-      /* 전압 표시: X.XXV (소수점 2자리) */
       uint32_t vdda_int  = vdda_mv / 1000u;
       uint32_t vdda_frac = (vdda_mv % 1000u) / 10u;
       snprintf(buf, sizeof(buf), "Tmp:%3ldC  Vref:%u.%02uV",
                (long)temp_c, (unsigned)vdda_int, (unsigned)vdda_frac);
       LCD_DrawString(4, 98, buf, LCD_YELLOW, LCD_BLACK);
 
-      osDelay(500);
+      tx_thread_sleep(500);
   }
   /* USER CODE END 5 */
 }
+
+/* USER CODE END 4 */
 
 /**
   * @brief  Period elapsed callback in non blocking mode

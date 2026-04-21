@@ -76,7 +76,7 @@
 
 /** @brief Display 태스크 우선순위 */
 #ifndef LCD_TASK_PRIO
-#define LCD_TASK_PRIO           osPriorityNormal
+#define LCD_TASK_PRIO           4u     /**< ThreadX 우선순위 (낮을수록 높음) */
 #endif
 
 /** @brief DrawString 텍스트 최대 길이 (NULL 포함) */

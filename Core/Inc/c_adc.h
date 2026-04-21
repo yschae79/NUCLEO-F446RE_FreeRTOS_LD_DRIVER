@@ -12,7 +12,7 @@
 #ifndef C_ADC_H
 #define C_ADC_H
 
-#include "cmsis_os.h"
+#include "tx_api.h"
 #include "stm32f4xx_ll_adc.h"
 #include <stdint.h>
 
@@ -45,7 +45,7 @@
 
 /** @brief ADC 태스크 우선순위 — Display·Printf보다 높게 설정 */
 #ifndef ADC_TASK_PRIO
-#define ADC_TASK_PRIO       osPriorityAboveNormal
+#define ADC_TASK_PRIO       3u      /**< ThreadX \uc6b0\uc120\uc21c\uc704 (3=\ub192\uc74c, 0\uc774 \ucd5c\uc0c1\uc704) */
 #endif
 
 /* ── 공유 결과 버퍼 ──────────────────────────────────────────────────── */

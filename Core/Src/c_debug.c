@@ -13,8 +13,7 @@
 
 #include "c_debug.h"
 #include "main.h"
-#include "FreeRTOS.h"
-#include "semphr.h"
+#include "tx_api.h"
 #include <string.h>
 
 /* ----------------------- 외부 HAL 핸들 ---------------------------------- */
@@ -29,10 +28,11 @@ static volatile uint16_t s_dmaLen;      /**< 현재 DMA 전송 중인 바이트 
 static volatile uint8_t  s_dmaBusy;     /**< DMA TX 진행 중: 1  */
 
 /* ----------------------- RTOS 동기화 ------------------------------------ */
-static SemaphoreHandle_t s_txMutex;     /**< 링버퍼 동시 접근 보호 뮤텍스 */
+static TX_MUTEX   s_txMutex;            /**< 링버퍼 동시 접근 보호 뮤텍스 */
+static uint8_t    s_mutexReady;         /**< 1: 뮤텍스 초기화 완료 */
 
 #if (DEBUG_OVERFLOW_BLOCK == 1)
-static SemaphoreHandle_t s_txSpace;     /**< BLOCK 정책: 여유공간 알림 세마포어 */
+static TX_SEMAPHORE s_txSpace;          /**< BLOCK 정책: 여유공간 알림 세마포어 */
 #endif
 
 /* ----------------------- Private 헬퍼 함수 ------------------------------ */
@@ -87,9 +87,11 @@ void Debug_Init(void)
     s_tail    = 0;
     s_dmaLen  = 0;
     s_dmaBusy = 0;
-    s_txMutex = xSemaphoreCreateMutex();
+    s_mutexReady = 0;
+    tx_mutex_create(&s_txMutex, "dbg_mtx", TX_NO_INHERIT);
+    s_mutexReady = 1;
 #if (DEBUG_OVERFLOW_BLOCK == 1)
-    s_txSpace = xSemaphoreCreateBinary();
+    tx_semaphore_create(&s_txSpace, "dbg_sem", 0);
 #endif
 }
 
@@ -113,10 +115,8 @@ void Debug_TxCpltHandler(void)
     }
 
 #if (DEBUG_OVERFLOW_BLOCK == 1)
-    /* BLOCK 정책: 여유공간 생겼음을 알림 */
-    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-    xSemaphoreGiveFromISR(s_txSpace, &xHigherPriorityTaskWoken);
-    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+    /* BLOCK 정책: 여유공간 생겼음을 알림 (ThreadX ISR-safe) */
+    tx_semaphore_put(&s_txSpace);
 #endif
 }
 
@@ -139,8 +139,8 @@ int _write(int file, char *ptr, int len)
     if (len <= 0) return 0;
 
     /* 스케줄러 시작 전에는 뮤텍스 없이 직접 접근 (Debug_Init 직후 등) */
-    if (s_txMutex != NULL && xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) {
-        xSemaphoreTake(s_txMutex, portMAX_DELAY);
+    if (s_mutexReady && tx_thread_identify() != TX_NULL) {
+        tx_mutex_get(&s_txMutex, TX_WAIT_FOREVER);
     }
 
 #if (DEBUG_OVERFLOW_BLOCK == 1)
@@ -152,12 +152,12 @@ int _write(int file, char *ptr, int len)
         uint16_t avail = RingFree();
         if (avail == 0) {
             /* 뮤텍스 해제 후 여유공간 대기 → 다시 획득 */
-            if (s_txMutex != NULL && xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) {
-                xSemaphoreGive(s_txMutex);
+            if (s_mutexReady && tx_thread_identify() != TX_NULL) {
+                tx_mutex_put(&s_txMutex);
             }
-            xSemaphoreTake(s_txSpace, portMAX_DELAY);
-            if (s_txMutex != NULL && xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) {
-                xSemaphoreTake(s_txMutex, portMAX_DELAY);
+            tx_semaphore_get(&s_txSpace, TX_WAIT_FOREVER);
+            if (s_mutexReady && tx_thread_identify() != TX_NULL) {
+                tx_mutex_get(&s_txMutex, TX_WAIT_FOREVER);
             }
             continue;
         }
@@ -215,8 +215,8 @@ int _write(int file, char *ptr, int len)
     }
 #endif
 
-    if (s_txMutex != NULL && xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) {
-        xSemaphoreGive(s_txMutex);
+    if (s_mutexReady && tx_thread_identify() != TX_NULL) {
+        tx_mutex_put(&s_txMutex);
     }
 
     return len;     /* 일부 바이트가 드롭됐더라도 요청한 len 전체를 반환 */

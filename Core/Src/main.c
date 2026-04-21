@@ -24,6 +24,7 @@
 /* USER CODE BEGIN Includes */
 #include "c_debug.h"
 #include "c_lcd_ili9341.h"
+#include "c_adc.h"
 #include <stdio.h>
 /* USER CODE END Includes */
 
@@ -43,8 +44,13 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+ADC_HandleTypeDef hadc1;
+DMA_HandleTypeDef hdma_adc1;
+
 SPI_HandleTypeDef hspi2;
 DMA_HandleTypeDef hdma_spi2_tx;
+
+TIM_HandleTypeDef htim2;
 
 UART_HandleTypeDef huart2;
 DMA_HandleTypeDef hdma_usart2_tx;
@@ -74,6 +80,8 @@ static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_SPI2_Init(void);
+static void MX_ADC1_Init(void);
+static void MX_TIM2_Init(void);
 void StartDefaultTask(void *argument);
 
 /* USER CODE BEGIN PFP */
@@ -117,6 +125,8 @@ int main(void)
   MX_DMA_Init();
   MX_USART2_UART_Init();
   MX_SPI2_Init();
+  MX_ADC1_Init();
+  MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
   Debug_Init();
   /* USER CODE END 2 */
@@ -146,6 +156,7 @@ int main(void)
 
   /* USER CODE BEGIN RTOS_THREADS */
   TestTask2Handle = osThreadNew(TestTask2Entry, NULL, &TestTask2_attributes);
+  ADC_Init();
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
@@ -180,7 +191,7 @@ void SystemClock_Config(void)
   /** Configure the main internal regulator output voltage
   */
   __HAL_RCC_PWR_CLK_ENABLE();
-  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE3);
+  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
 
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
@@ -191,11 +202,18 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
   RCC_OscInitStruct.PLL.PLLM = 8;
-  RCC_OscInitStruct.PLL.PLLN = 80;
+  RCC_OscInitStruct.PLL.PLLN = 180;
   RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
   RCC_OscInitStruct.PLL.PLLQ = 2;
   RCC_OscInitStruct.PLL.PLLR = 2;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Activate the Over-Drive mode
+  */
+  if (HAL_PWREx_EnableOverDrive() != HAL_OK)
   {
     Error_Handler();
   }
@@ -206,13 +224,148 @@ void SystemClock_Config(void)
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
-  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
-  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV4;
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV2;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_5) != HAL_OK)
   {
     Error_Handler();
   }
+}
+
+/**
+  * @brief ADC1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_ADC1_Init(void)
+{
+
+  /* USER CODE BEGIN ADC1_Init 0 */
+
+  /* USER CODE END ADC1_Init 0 */
+
+  ADC_ChannelConfTypeDef sConfig = {0};
+
+  /* USER CODE BEGIN ADC1_Init 1 */
+
+  /* USER CODE END ADC1_Init 1 */
+
+  /** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion)
+  */
+  hadc1.Instance = ADC1;
+  hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
+  hadc1.Init.Resolution = ADC_RESOLUTION_12B;
+  hadc1.Init.ScanConvMode = ENABLE;
+  hadc1.Init.ContinuousConvMode = DISABLE;
+  hadc1.Init.DiscontinuousConvMode = ENABLE;
+  hadc1.Init.NbrOfDiscConversion = 1;
+  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_RISING;
+  hadc1.Init.ExternalTrigConv = ADC_EXTERNALTRIGCONV_T2_TRGO;
+  hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc1.Init.NbrOfConversion = 10;
+  hadc1.Init.DMAContinuousRequests = ENABLE;
+  hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+  if (HAL_ADC_Init(&hadc1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_8;
+  sConfig.Rank = 1;
+  sConfig.SamplingTime = ADC_SAMPLETIME_15CYCLES;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_9;
+  sConfig.Rank = 2;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_10;
+  sConfig.Rank = 3;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_11;
+  sConfig.Rank = 4;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_12;
+  sConfig.Rank = 5;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_13;
+  sConfig.Rank = 6;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_14;
+  sConfig.Rank = 7;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_15;
+  sConfig.Rank = 8;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_TEMPSENSOR;
+  sConfig.Rank = 9;
+  sConfig.SamplingTime = ADC_SAMPLETIME_480CYCLES;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_VREFINT;
+  sConfig.Rank = 10;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN ADC1_Init 2 */
+
+  /* USER CODE END ADC1_Init 2 */
+
 }
 
 /**
@@ -250,6 +403,51 @@ static void MX_SPI2_Init(void)
   /* USER CODE BEGIN SPI2_Init 2 */
 
   /* USER CODE END SPI2_Init 2 */
+
+}
+
+/**
+  * @brief TIM2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM2_Init(void)
+{
+
+  /* USER CODE BEGIN TIM2_Init 0 */
+
+  /* USER CODE END TIM2_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM2_Init 1 */
+
+  /* USER CODE END TIM2_Init 1 */
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = 0;
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 9000-1;
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_UPDATE;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM2_Init 2 */
+
+  /* USER CODE END TIM2_Init 2 */
 
 }
 
@@ -294,6 +492,7 @@ static void MX_DMA_Init(void)
 
   /* DMA controller clock enable */
   __HAL_RCC_DMA1_CLK_ENABLE();
+  __HAL_RCC_DMA2_CLK_ENABLE();
 
   /* DMA interrupt init */
   /* DMA1_Stream4_IRQn interrupt configuration */
@@ -302,6 +501,9 @@ static void MX_DMA_Init(void)
   /* DMA1_Stream6_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Stream6_IRQn, 5, 0);
   HAL_NVIC_EnableIRQ(DMA1_Stream6_IRQn);
+  /* DMA2_Stream0_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Stream0_IRQn);
 
 }
 
@@ -388,16 +590,41 @@ void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *hspi)
     }
 }
 
-/** @brief 두 번째 테스트 태스크 — 500ms 주기로 printf + LCD 출력 (멀티태스크 검증) */
+/** @brief ADC DMA Half-Transfer 완료 콜백 */
+void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef *hadc)
+{
+    if (hadc == &ADC_INSTANCE) {
+        ADC_HalfCpltHandler();
+    }
+}
+
+/** @brief ADC DMA Transfer-Complete 완료 콜백 */
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
+{
+    if (hadc == &ADC_INSTANCE) {
+        ADC_CpltHandler();
+    }
+}
+
+/** @brief 두 번째 테스트 태스크 — 1s 주기로 ADC 10채널 전체 printf 출력 */
 void TestTask2Entry(void *argument)
 {
     (void)argument;
-    uint32_t count = 0;
-    char buf[32];
     for (;;) {
-        printf("Task2: count=%lu\r\n", (unsigned long)count);
-        snprintf(buf, sizeof(buf), "Task2: %lu  ", (unsigned long)count++);
-        LCD_DrawString(16, 100, buf, LCD_YELLOW, LCD_BLACK);
+            uint32_t vrc = (uint32_t)(*VREFINT_CAL_ADDR);
+        uint32_t vdda = (vrc > 0u) ? (3300u * vrc / (uint32_t)g_adcResult[9]) : 3300u;
+        int32_t tc1 = (int32_t)(*TEMPSENSOR_CAL1_ADDR);
+        int32_t tc2 = (int32_t)(*TEMPSENSOR_CAL2_ADDR);
+        int32_t traw = (int32_t)(uint32_t)g_adcResult[8];
+        int32_t tcorr = (int32_t)(traw * vdda / 3300u);
+        int32_t temp = ((tcorr - tc1) * (110 - 30) / (tc2 - tc1)) + 30;
+        printf("ADC CH8=%4u CH9=%4u CH10=%4u CH11=%4u CH12=%4u"
+               " CH13=%4u CH14=%4u CH15=%4u Tmp=%ldC Vdda=%lumV\r\n",
+               (unsigned)g_adcResult[0], (unsigned)g_adcResult[1],
+               (unsigned)g_adcResult[2], (unsigned)g_adcResult[3],
+               (unsigned)g_adcResult[4], (unsigned)g_adcResult[5],
+               (unsigned)g_adcResult[6], (unsigned)g_adcResult[7],
+               (long)temp, (unsigned long)vdda);
         osDelay(1000);
     }
 }
@@ -426,16 +653,63 @@ void StartDefaultTask(void *argument)
 
   /* 타이틀 출력 (16×24 폰트) */
   LCD_SetFont(&Font_16x24);
-  LCD_DrawString(16, 16, "ILI9341 LCD Demo", LCD_CYAN, LCD_BLACK);
+  LCD_DrawString(4, 4, "ADC 10ch  1kHz", LCD_CYAN, LCD_BLACK);
 
-  /* 카운터 루프 (8×16 폰트) */
+  /* ADC 채널 레이블 고정 출력 (8×16 폰트) */
   LCD_SetFont(&Font_8x16);
-  uint32_t count = 0;
-  char buf[32];
+  LCD_DrawString(4, 34, "CH8 :      CH9 :    ", LCD_WHITE, LCD_BLACK);
+  LCD_DrawString(4, 50, "CH10:      CH11:    ", LCD_WHITE, LCD_BLACK);
+  LCD_DrawString(4, 66, "CH12:      CH13:    ", LCD_WHITE, LCD_BLACK);
+  LCD_DrawString(4, 82, "CH14:      CH15:    ", LCD_WHITE, LCD_BLACK);
+  LCD_DrawString(4, 98, "Tmp:       Vref:    ", LCD_YELLOW, LCD_BLACK);
+
+  /* ADC 값 갱신 루프 — 500ms 주기 */
+  char buf[44];
   for (;;) {
-      snprintf(buf, sizeof(buf), "Task1: %lu  ", (unsigned long)count++);
-      LCD_DrawString(16, 60, buf, LCD_GREEN, LCD_BLACK);
-      printf("LCD count=%lu\r\n", (unsigned long)(count - 1));
+      snprintf(buf, sizeof(buf), "CH8 :%4u  CH9 :%4u",
+               (unsigned)g_adcResult[0], (unsigned)g_adcResult[1]);
+      LCD_DrawString(4, 34, buf, LCD_WHITE, LCD_BLACK);
+
+      snprintf(buf, sizeof(buf), "CH10:%4u  CH11:%4u",
+               (unsigned)g_adcResult[2], (unsigned)g_adcResult[3]);
+      LCD_DrawString(4, 50, buf, LCD_WHITE, LCD_BLACK);
+
+      snprintf(buf, sizeof(buf), "CH12:%4u  CH13:%4u",
+               (unsigned)g_adcResult[4], (unsigned)g_adcResult[5]);
+      LCD_DrawString(4, 66, buf, LCD_WHITE, LCD_BLACK);
+
+      snprintf(buf, sizeof(buf), "CH14:%4u  CH15:%4u",
+               (unsigned)g_adcResult[6], (unsigned)g_adcResult[7]);
+      LCD_DrawString(4, 82, buf, LCD_WHITE, LCD_BLACK);
+
+      /* VDDA 계산 (팩토리 캘리브레이션 기반, mV 단위)
+       * VDDA_mV = 3300 * VREFINT_CAL / ADC_VREFINT
+       * VREFINT_CAL: 0x1FFF7A2A, 3.3V/30°C 조건 측정값 */
+      uint32_t vrefint_cal = (uint32_t)(*VREFINT_CAL_ADDR);
+      uint32_t vdda_mv = (vrefint_cal > 0u)
+                         ? (3300u * vrefint_cal / (uint32_t)g_adcResult[9])
+                         : 3300u;
+
+      /* 온도 계산 (팩토리 캘리브레이션 기반, 정수 °C)
+       * VDDA 보정 후 온도 = (TS_ADC * VDDA / 3300 - TS_CAL1)
+       *                     * (110 - 30) / (TS_CAL2 - TS_CAL1) + 30
+       * TEMPSENSOR_CAL1_ADDR: 0x1FFF7A2C (30°C 기준)
+       * TEMPSENSOR_CAL2_ADDR: 0x1FFF7A2E (110°C 기준) */
+      int32_t ts_cal1  = (int32_t)(*TEMPSENSOR_CAL1_ADDR);
+      int32_t ts_cal2  = (int32_t)(*TEMPSENSOR_CAL2_ADDR);
+      int32_t ts_raw   = (int32_t)(uint32_t)g_adcResult[8];
+      /* VDDA 보정: ADC 값을 3.3V 기준으로 환산 */
+      int32_t ts_corr  = (int32_t)(ts_raw * vdda_mv / 3300u);
+      int32_t temp_c   = ((ts_corr - ts_cal1) * (110 - 30)
+                         / (ts_cal2 - ts_cal1)) + 30;
+
+      /* 전압 표시: X.XXV (소수점 2자리) */
+      uint32_t vdda_int  = vdda_mv / 1000u;
+      uint32_t vdda_frac = (vdda_mv % 1000u) / 10u;
+      snprintf(buf, sizeof(buf), "Tmp:%3ldC  Vref:%u.%02uV",
+               (long)temp_c, (unsigned)vdda_int, (unsigned)vdda_frac);
+      LCD_DrawString(4, 98, buf, LCD_YELLOW, LCD_BLACK);
+
       osDelay(500);
   }
   /* USER CODE END 5 */

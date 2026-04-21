@@ -48,6 +48,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/c_debug.c
     Core/Src/c_font.c
     Core/Src/c_lcd_ili9341.c
+    Core/Src/c_adc.c
 )
 
 # Add include paths

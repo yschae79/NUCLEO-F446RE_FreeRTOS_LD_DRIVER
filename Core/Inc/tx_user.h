@@ -126,6 +126,9 @@
 
 #define TX_DISABLE_PREEMPTION_THRESHOLD
 
+/* TraceX 이벤트 트레이스 활성화 */
+#define TX_ENABLE_EVENT_TRACE
+
 /* Determine if global ThreadX variables should be cleared. If the compiler startup code clears
    the .bss section prior to ThreadX running, the define can be used to eliminate unnecessary
    clearing of ThreadX global variables.  */
@@ -149,7 +152,8 @@
    enabled. If the application does not use notify callbacks, they may be disabled to reduce
    code size and improve performance.  */
 
-#define TX_DISABLE_NOTIFY_CALLBACKS
+/* TX_DISABLE_NOTIFY_CALLBACKS 제거 — tx_trace_buffer_full_notify 콜백 사용을 위해 활성화 필요 */
+/*#define TX_DISABLE_NOTIFY_CALLBACKS*/
 
 /* Determine if the tx_thread_resume and tx_thread_suspend services should have their internal
    code in-line. This results in a larger image, but improves the performance of the thread

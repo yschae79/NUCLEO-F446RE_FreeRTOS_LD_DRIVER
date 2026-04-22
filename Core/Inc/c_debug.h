@@ -52,4 +52,13 @@ void Debug_Init(void);
  */
 void Debug_TxCpltHandler(void);
 
+/**
+ * @brief  Binary 데이터를 UART2 DMA를 통해 전송
+ * @note   printf 스트림과 충돌 없이 안전하게 전송 (mutex 사용)
+ * @note   태스크 컨텍스트 전용 — ISR에서 호출 금지
+ * @param  data  전송할 데이터 포인터
+ * @param  len   전송할 바이트 수
+ */
+void Debug_SendBinary(const uint8_t *data, uint32_t len);
+
 #endif /* C_DEBUG_H */

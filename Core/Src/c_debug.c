@@ -221,3 +221,55 @@ int _write(int file, char *ptr, int len)
 
     return len;     /* 일부 바이트가 드롭됐더라도 요청한 len 전체를 반환 */
 }
+
+/**
+ * @brief  Binary 데이터를 UART2 DMA를 통해 전송 (TraceX 덤프 전용)
+ * @note   동일한 버퍼 + DMA 인프라를 재사용
+ *         printf와 충돌 없도록 mutex 로 보호
+ *         큰 데이터를 DEBUG_TX_BUF_SIZE 첩크 단위로 분할 전송
+ */
+void Debug_SendBinary(const uint8_t *data, uint32_t len)
+{
+    if (data == NULL || len == 0u) return;
+    if (!s_mutexReady || tx_thread_identify() == TX_NULL) return;
+
+    uint32_t offset = 0;
+
+    while (offset < len) {
+        tx_mutex_get(&s_txMutex, TX_WAIT_FOREVER);
+
+        /* 링버퍼 여유가 생길 때까지 대기 (블록 전달) */
+        while (RingFree() == 0u) {
+            tx_mutex_put(&s_txMutex);
+            tx_thread_sleep(1);
+            tx_mutex_get(&s_txMutex, TX_WAIT_FOREVER);
+        }
+
+        uint16_t avail   = RingFree();
+        uint32_t remain  = len - offset;
+        uint16_t toWrite = (remain <= (uint32_t)avail)
+                           ? (uint16_t)remain
+                           : avail;
+
+        uint16_t h          = s_head;
+        uint16_t firstChunk = (uint16_t)(DEBUG_TX_BUF_SIZE - h);
+
+        if (toWrite <= firstChunk) {
+            memcpy(&s_txBuf[h], data + offset, toWrite);
+        } else {
+            memcpy(&s_txBuf[h], data + offset, firstChunk);
+            memcpy(&s_txBuf[0], data + offset + firstChunk,
+                   toWrite - firstChunk);
+        }
+
+        h += toWrite;
+        if (h >= DEBUG_TX_BUF_SIZE) h -= DEBUG_TX_BUF_SIZE;
+        s_head = h;
+
+        if (!s_dmaBusy) StartDMA();
+
+        tx_mutex_put(&s_txMutex);
+
+        offset += toWrite;
+    }
+}

@@ -129,6 +129,16 @@
 /* TraceX 이벤트 트레이스 활성화 */
 #define TX_ENABLE_EVENT_TRACE
 
+/* TraceX 타임스탬프 소스: DWT 사이클 카운터 (SYSCLK 180MHz, 분해능 ~5.6ns)
+   - TX_TRACE_TIME_SOURCE : DWT->CYCCNT 레지스터 직접 읽기 (0xE0001004)
+   - TX_TRACE_TIME_MASK   : 32비트 카운터 전체 마스크
+   - 활성화 코드(main.c USER CODE BEGIN SysInit):
+       CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+       DWT->CYCCNT = 0U;
+       DWT->CTRL   |= DWT_CTRL_CYCCNTENA_Msk;                    */
+#define TX_TRACE_TIME_SOURCE    (*((ULONG *)0xE0001004U))
+#define TX_TRACE_TIME_MASK      0xFFFFFFFFUL
+
 /* Determine if global ThreadX variables should be cleared. If the compiler startup code clears
    the .bss section prior to ThreadX running, the define can be used to eliminate unnecessary
    clearing of ThreadX global variables.  */
@@ -251,4 +261,3 @@
 /*#define TX_SAFETY_CRITICAL*/
 
 #endif
-

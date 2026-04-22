@@ -105,7 +105,10 @@ int main(void)
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
-
+  /* TraceX 타임스탬프용 DWT 사이클 카운터 활성화 */
+  CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+  DWT->CYCCNT = 0U;
+  DWT->CTRL   |= DWT_CTRL_CYCCNTENA_Msk;
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
@@ -573,13 +576,13 @@ void TestTask2Entry(ULONG argument)
         int32_t traw = (int32_t)(uint32_t)g_adcResult[8];
         int32_t tcorr = (int32_t)(traw * vdda / 3300u);
         int32_t temp = ((tcorr - tc1) * (110 - 30) / (tc2 - tc1)) + 30;
-        printf("ADC CH8=%4u CH9=%4u CH10=%4u CH11=%4u CH12=%4u"
-               " CH13=%4u CH14=%4u CH15=%4u Tmp=%ldC Vdda=%lumV\r\n",
-               (unsigned)g_adcResult[0], (unsigned)g_adcResult[1],
-               (unsigned)g_adcResult[2], (unsigned)g_adcResult[3],
-               (unsigned)g_adcResult[4], (unsigned)g_adcResult[5],
-               (unsigned)g_adcResult[6], (unsigned)g_adcResult[7],
-               (long)temp, (unsigned long)vdda);
+        // printf("ADC CH8=%4u CH9=%4u CH10=%4u CH11=%4u CH12=%4u"
+        //        " CH13=%4u CH14=%4u CH15=%4u Tmp=%ldC Vdda=%lumV\r\n",
+        //        (unsigned)g_adcResult[0], (unsigned)g_adcResult[1],
+        //        (unsigned)g_adcResult[2], (unsigned)g_adcResult[3],
+        //        (unsigned)g_adcResult[4], (unsigned)g_adcResult[5],
+        //        (unsigned)g_adcResult[6], (unsigned)g_adcResult[7],
+        //        (long)temp, (unsigned long)vdda);
         tx_thread_sleep(1000);
     }
 }

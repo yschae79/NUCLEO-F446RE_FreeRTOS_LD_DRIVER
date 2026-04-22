@@ -235,14 +235,17 @@ void Debug_SendBinary(const uint8_t *data, uint32_t len)
 
     uint32_t offset = 0;
 
-    while (offset < len) {
-        tx_mutex_get(&s_txMutex, TX_WAIT_FOREVER);
+    /* 뮤텍스를 프레임 전체 구간 동안 단 한 번만 획득한다.
+       DMA TxCplt ISR은 뮤텍스를 사용하지 않으므로, 뮤텍스를 보유한 채로
+       tx_thread_sleep() 해도 링버퍼 drain이 정상 동작한다.
+       덕분에 printf(_write)가 프레임 중간에 끼어들 수 없다.          */
+    tx_mutex_get(&s_txMutex, TX_WAIT_FOREVER);
 
-        /* 링버퍼 여유가 생길 때까지 대기 (블록 전달) */
+    while (offset < len) {
+        /* 링버퍼 여유 대기 — 뮤텍스 유지하면서 sleep → ISR이 drain */
         while (RingFree() == 0u) {
-            tx_mutex_put(&s_txMutex);
-            tx_thread_sleep(1);
-            tx_mutex_get(&s_txMutex, TX_WAIT_FOREVER);
+            if (!s_dmaBusy) StartDMA();
+            tx_thread_sleep(1);         /* 1ms 대기, mutex 계속 보유 */
         }
 
         uint16_t avail   = RingFree();
@@ -268,8 +271,8 @@ void Debug_SendBinary(const uint8_t *data, uint32_t len)
 
         if (!s_dmaBusy) StartDMA();
 
-        tx_mutex_put(&s_txMutex);
-
         offset += toWrite;
     }
+
+    tx_mutex_put(&s_txMutex);
 }

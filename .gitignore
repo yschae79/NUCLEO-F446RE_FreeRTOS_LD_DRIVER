@@ -2,3 +2,5 @@ build
 mx.scratch
 !.settings
 tools/tracex_dumps/
+tools/dist/
+tools/build_tmp/

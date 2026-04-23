@@ -121,7 +121,14 @@ def main() -> None:
 
     port = sys.argv[1]
     baud = int(sys.argv[2]) if len(sys.argv) >= 3 else 230400
-    outdir = os.path.join(os.path.dirname(__file__), "tracex_dumps")
+
+    # PyInstaller --onefile 실행 시 __file__은 임시 디렉터리를 가리키므로
+    # sys.executable(exe 자신의 경로) 기준으로 출력 폴더를 결정한다.
+    if getattr(sys, 'frozen', False):
+        base_dir = os.path.dirname(sys.executable)
+    else:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+    outdir = os.path.join(base_dir, "tracex_dumps")
 
     try:
         recv_loop(port, baud, outdir)
